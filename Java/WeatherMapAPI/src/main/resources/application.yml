@@ -32,3 +32,4 @@ openweather:
   api:
     key: ${WEATHER_API_KEY}
     base-url: https://api.openweathermap.org/data/3.0/onecall
+    timemachine-url: https://api.openweathermap.org/data/3.0/onecall/timemachine

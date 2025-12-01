@@ -1,6 +1,7 @@
 package com.example.weathermapapi.gis.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -15,4 +16,7 @@ public class OpenWeatherResponse {
     private double lon;
 
     private List<HourlyWeatherDTO> hourly;
+
+    @JsonProperty("data")
+    private List<HourlyWeatherDTO> data;
 }

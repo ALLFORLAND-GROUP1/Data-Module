@@ -1,12 +1,19 @@
 package com.example.weathermapapi.gis.service;
 
-public interface WeatherService {
-    /**
-     * 지정된 위도/경도에 대해 One Call API 호출 후
-     * hourly 데이터를 weather_raw 테이블에 저장
-     */
-    void fetchAndSaveHourly(double lat, double lon);
+import java.time.OffsetDateTime;
 
-    void fetchAndSaveForDefaultStations();
+public interface WeatherService {
+
+    /**
+     * 기본 5개 역에 대해
+     * One Call API 호출 후 hourly를 저장
+     */
+    void saveDataForStations();
+
+    /**
+     * 기본 5개 역에 대해
+     * start~end(1시간 간격) 구간의 데이터를 저장
+     */
+    void saveHistoryDataForStations(OffsetDateTime start, OffsetDateTime end);
 
 }
