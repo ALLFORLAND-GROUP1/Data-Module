@@ -1,4 +1,6 @@
 import os
+import schedule
+import time
 import requests
 import numpy as np
 import geopandas as gpd
@@ -7,22 +9,28 @@ import rasterio
 from rasterio.transform import from_origin
 from rasterio.features import rasterize
 from dateutil import parser
+from dotenv import load_dotenv
 
 # ==========================
-# 1. Supabase REST API URL 및 GEOSERVER URL 연결 데이터
+# 1. Supabase REST API URL 및 GEOSERVER URL 연결 데이터 불러오기
 # ==========================
-SUPABASE_URL = "https://uoguqtixsmnbesflphyg.supabase.co"
-SUPABASE_KEY = "sb_secret_M5WfrrFMIdLOhCdDtimEEg_otarTW_n"
-TABLE_NAME = "weather_raw"
 
-GEOSERVER_URL = "http://localhost:8888/geoserver"
-GEOSERVER_USER = "admin"
-GEOSERVER_PASS = "geoserver"
-GEOSERVER_ROOT = "file:///C:/GeoServer/webapps/geoserver/data/rasters/"
+load_dotenv()
 
-WORKSPACE = "weather"
-COVERAGE_STORE = "time_temp_test"
+supabase_url = os.getenv('SUPABASE_URL')
+supabase_key = os.getenv('SUPABASE_KEY')
+table_name = os.getenv('TABLE_NAME')
 
+geoserver_url = os.getenv('GEOSERVER_URL')
+geoserver_user = os.getenv('GEOSERVER_USER')
+geoserver_pass = os.getenv('GEOSERVER_PASS')
+geoserver_root = os.getenv('GEOSERVER_ROOT')
+
+workspace = os.getenv('WORKSPACE')
+coverage_store = os.getenv('COVERAGE_STORE')
+
+output_dir = os.getenv('OUTPUT_DIR')
+ec2_raster_dir = os.getenv('EC2_RASTER_DIR')
 
 # ==========================
 # 2. 서울 영역 & 해상도
@@ -37,35 +45,56 @@ RESOLUTION = 0.001          # 0.005 : 더 고해상도 이지만, 경계가 뚜�
 NODATA_VALUE = -9999.0      # 서울 밖에 넣을 값
 
 headers = { 
-    "apikey": SUPABASE_KEY, 
-    "Authorization": f"Bearer {SUPABASE_KEY}", 
+    "apikey": supabase_key, 
+    "Authorization": f"Bearer {supabase_key}", 
 }
 
 # ==========================
 # 3. weather_raw 테이블에서 모든 ts 가져오기
 # ==========================
 def fetch_all_timestamps():
-    url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+    url = f"{supabase_url}/rest/v1/{table_name}"
+    all_ts = set()
+    page_size = 1000
+    offset = 0
 
-    params = {
-        "select": "ts",
-        "order": "ts.asc",   # 시간순 정렬
-    }
+    while True:
+        params = {
+            "select": "ts",
+            "order": "ts.asc",
+            "limit": page_size,
+            "offset": offset,
+        }
 
-    r = requests.get(url, params=params, headers=headers)
-    r.raise_for_status()
-    rows = r.json()
+        r = requests.get(url, params=params, headers=headers)
+        r.raise_for_status()
+        rows = r.json()
 
-    ts_set = {row["ts"] for row in rows if row.get("ts") is not None}
-    ts_list = sorted(ts_set)
+        if not rows:
+            break
 
+        for row in rows:
+            ts_val = row.get("ts")
+            if ts_val is not None:
+                all_ts.add(ts_val)
+
+        if len(rows) < page_size:
+            # 마지막 페이지
+            break
+
+        offset += page_size
+
+    ts_list = sorted(all_ts)
+    print("ts 개수:", len(ts_list))
+    if ts_list:
+        print("ts 범위:", ts_list[0], "~", ts_list[-1])
     return ts_list
 
 # ==========================
 # 4. GeoDataFrame 설정
 # ==========================
 def fetch_gdf_for_timestamp(ts_str: str) -> gpd.GeoDataFrame:
-    url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+    url = f"{supabase_url}/rest/v1/{table_name}"
 
     params = {
         "select": "lon,lat,temp",
@@ -171,7 +200,7 @@ def create_tiff_for_timestamp(ts_str: str, out_tiff_path: str):
         dst.write(temp_grid_masked.astype(np.float32), 1)
 
 # ==========================
-# 7. 일괄 생성 (timestamptz → temp_YYYY-MM-DD_HH.tif 로 변환)
+# 7. 자동 일괄 생성 (timestamptz → temp_YYYY-MM-DD_HH.tif 로 변환)
 # ==========================
 
 def ts_to_filename(ts_str: str) -> str:
@@ -180,18 +209,17 @@ def ts_to_filename(ts_str: str) -> str:
     hour_part = dt.strftime("%H")       # HH 형태
     return f"temp_{date_part}_{hour_part}.tif"
 
+# 지오서버 인덱스 자동 갱신   
 def harvest_to_geoserver(tiff_path):
     file_name = os.path.basename(tiff_path)
+    file_url = f"file:{ec2_raster_dir}/{file_name}"
 
-    file_url = GEOSERVER_ROOT + file_name
+    # print("tiff_path:", tiff_path)
+    # print("GeoServer:", file_url)
 
-    print("[DEBUG] tiff_path:", tiff_path)
-    print("[DEBUG] file_name:", file_name)
-    print("[DEBUG] file_url for GeoServer:", file_url)
-    
     url = (
-        f"{GEOSERVER_URL}/rest/workspaces/"
-        f"{WORKSPACE}/coveragestores/{COVERAGE_STORE}/external.imagemosaic"
+        f"{geoserver_url}/rest/workspaces/"
+        f"{workspace}/coveragestores/{coverage_store}/external.imagemosaic"
     )
 
     headers = {"Content-Type": "text/plain"}
@@ -200,12 +228,13 @@ def harvest_to_geoserver(tiff_path):
         url,
         data=file_url,
         headers=headers,
-        auth=(GEOSERVER_USER, GEOSERVER_PASS),
+        auth=(geoserver_user, geoserver_pass),
     )
 
     print("harvest status:", resp.status_code)
     print(resp.text)
 
+# DB 내 새로 추가된 데이터 -> TIFF 생성
 def create_all_tiffs(output_dir: str):
     ts_list = fetch_all_timestamps()
     new_files = [] 
@@ -219,6 +248,7 @@ def create_all_tiffs(output_dir: str):
         try:
             create_tiff_for_timestamp(ts_str, out_tiff_path)
             new_files.append(out_tiff_path)
+            upload_to_ec2(out_tiff_path)
         except ValueError as e:
             pass
     
@@ -227,5 +257,21 @@ def create_all_tiffs(output_dir: str):
 
     print("완료")
 
-output_dir = r"C:\GeoServer\webapps\geoserver\data\rasters"
-create_all_tiffs(output_dir)
+# AWS에 TIFF 파일 업로드
+def upload_to_ec2(local_path):
+    cmd = f'scp -i C:/Users/admin/geoserver-key.pem "{local_path}" ubuntu@43.203.150.74:{ec2_raster_dir}'
+    result = os.system(cmd)
+    if result == 0:
+        print(f"{local_path} 전송 완료")
+    else:
+        print(f"{local_path} 전송 실패 (exit code={result})")
+
+
+# 스케줄러로 매일 한번 실행
+
+#schedule.every().day.at("15:57").do(create_all_tiffs, output_dir)
+schedule.every().day.at("04:10").do(create_all_tiffs, output_dir)
+
+while True:
+    schedule.run_pending()
+    time.sleep(1)
