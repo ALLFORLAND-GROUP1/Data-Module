@@ -5,7 +5,7 @@
 
 ---
 
-## 1. 프로젝트 구조 (핵심만)
+## 1. 프로젝트 구조
 
 ### Java (Spring Boot)
 - controller/ : 날씨 조회 API
